@@ -1,6 +1,7 @@
 #ifndef KATANA_LIBGALOIS_KATANA_PROPERTYGRAPH_H_
 #define KATANA_LIBGALOIS_KATANA_PROPERTYGRAPH_H_
 
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -66,8 +67,16 @@ struct KATANA_EXPORT GraphTopology {
   }
   Node edge_dest(Edge eid) const {
     KATANA_LOG_ASSERT(eid < static_cast<Edge>(out_dests->length()));
+    if (out_dests->IsNull(eid)) {
+      // katana::kInvalidLocalNodeID is in PartitionTypes
+      return std::numeric_limits<Node>::max();
+    }
     return out_dests->Value(eid);
   }
+
+  /// Mark an edge as "dead" by making its entry in out_dests null
+  /// It will be eliminated by the next repartition
+  Result<void> TombstoneEdge(Edge eid);
 
   nodes_range nodes(Node begin, Node end) const {
     return MakeStandardRange<node_iterator>(begin, end);
@@ -239,6 +248,8 @@ public:
   void set_local_to_global_vector(std::shared_ptr<arrow::ChunkedArray>&& a) {
     rdg_.set_local_to_global_vector(std::move(a));
   }
+
+  Result<void> TombstoneNode(GraphTopology::Node lid);
 
   /// Write the property graph to the given RDG name.
   ///
@@ -471,6 +482,9 @@ public:
     auto node_id = topology().edge_dest(*edge);
     return node_iterator(node_id);
   }
+  /// Mark an edge as "dead" by making its entry in out_dests null
+  /// It will be eliminated by the next repartition
+  Result<void> TombstoneEdge(Edge eid) { return topology_.TombstoneEdge(eid); }
 };
 
 /// SortAllEdgesByDest sorts edges for each node by destination

@@ -2,6 +2,10 @@
 
 #include <sys/mman.h>
 
+#include <arrow/array/util.h>
+#include <arrow/chunked_array.h>
+#include <arrow/scalar.h>
+
 #include "katana/Logging.h"
 #include "katana/Loops.h"
 #include "katana/Platform.h"
@@ -140,6 +144,37 @@ MakePropertyGraph(
 
   return katana::PropertyGraph::Make(
       std::move(rdg_file), std::move(rdg_result.value()));
+}
+
+katana::Result<void>
+MakeArrayNullable(const std::shared_ptr<arrow::Array>& array) {
+  // create a new null bitmask with everything marked as valid
+  arrow::TypedBufferBuilder<bool> buffer_builder;
+  auto status = buffer_builder.Append(array->length(), true);
+  if (!status.ok()) {
+    return KATANA_ERROR(
+        tsuba::ErrorCode::ArrowError, "make array nullable: {}", status);
+  }
+  std::shared_ptr<arrow::Buffer> buffer;
+  status = buffer_builder.Finish(&buffer);
+  if (!status.ok()) {
+    return KATANA_ERROR(
+        tsuba::ErrorCode::ArrowError, "buffer finish: {}", status);
+  }
+  // move that new buffer into the ArrayData
+  std::shared_ptr<arrow::ArrayData> data = array->data();
+  data->buffers[0] = std::move(buffer);
+  data->SetNullCount(arrow::kUnknownNullCount);
+  return katana::ResultSuccess();
+}
+
+std::vector<std::shared_ptr<arrow::Array>>
+ChunkedArrayToVectorArray(std::shared_ptr<arrow::ChunkedArray> chunked) {
+  std::vector<std::shared_ptr<arrow::Array>> ret;
+  for (int64_t i = 0; i < chunked->num_chunks(); ++i) {
+    ret.push_back(chunked->chunk(i));
+  }
+  return ret;
 }
 
 }  // namespace
@@ -284,6 +319,48 @@ katana::PropertyGraph::Equals(const PropertyGraph* other) const {
     }
   }
   return true;
+}
+
+katana::Result<void>
+katana::PropertyGraph::TombstoneNode(GraphTopology::Node lid) {
+  if (lid == std::numeric_limits<Node>::max()) {
+    return KATANA_ERROR(ErrorCode::InvalidArgument, "invalid local ID");
+  }
+  auto newl2g = rdg_.local_to_global_id();
+  auto datatype = newl2g->type();
+  auto chunks = ChunkedArrayToVectorArray(newl2g->Slice(0, lid));
+  arrow::UInt64Scalar tombstone(std::numeric_limits<uint64_t>::max());
+  auto tombarray = arrow::MakeArrayFromScalar(tombstone, 1);
+  chunks.push_back(tombarray.ValueOrDie());
+  if (lid < newl2g->length()) {
+    auto toend = ChunkedArrayToVectorArray(newl2g->Slice(lid + 1));
+    chunks.insert(chunks.end(), toend.begin(), toend.end());
+  }
+  rdg_.set_local_to_global_vector(
+      std::make_shared<arrow::ChunkedArray>(chunks));
+  return katana::ResultSuccess();
+}
+
+katana::Result<void>
+katana::GraphTopology::TombstoneEdge(Edge eid) {
+  if (eid == std::numeric_limits<Edge>::max()) {
+    return KATANA_ERROR(ErrorCode::InvalidArgument, "invalid edge ID");
+  }
+  KATANA_LOG_ASSERT(eid < static_cast<Edge>(out_dests->length()));
+  const auto& data = out_dests->data();
+  // TODO (witchel) Daniel M says it should be GetMutableValuesWorkAround
+  auto* null_bitmask = data->template GetMutableValues<uint8_t>(0, 0);
+  std::mutex m;
+  std::lock_guard<std::mutex> lk(m);
+  if (null_bitmask == nullptr) {
+    if (auto res = MakeArrayNullable(out_dests); !res) {
+      return res.error();
+    }
+  }
+  int64_t offset = out_dests->offset();
+  // This operation is not thread-safe
+  arrow::BitUtil::SetBitTo(null_bitmask, eid + offset, false);
+  return ResultSuccess();
 }
 
 katana::Result<void>
