@@ -88,6 +88,19 @@ ApproxArrayDataMemUse(const std::shared_ptr<arrow::ArrayData>& data) {
   return total_mem_use;
 }
 
+katana::Result<std::shared_ptr<arrow::Array>>
+Unchunk(const std::shared_ptr<arrow::ChunkedArray>& original) {
+  auto maybe_indices = Indices(original);
+  if (!maybe_indices) {
+    return maybe_indices.error();
+  }
+  auto maybe_chunked = IndexedTake(original, maybe_indices.value());
+  if (!maybe_chunked) {
+    return maybe_chunked.error();
+  }
+  return maybe_chunked.value()->chunk(0);
+}
+
 }  // anonymous namespace
 
 katana::ErrorCode
@@ -107,47 +120,6 @@ katana::ArrowToKatana(arrow::StatusCode code) {
   default:
     return ErrorCode::ArrowError;
   }
-}
-
-katana::Result<std::shared_ptr<arrow::Array>>
-katana::Unchunk(const std::shared_ptr<arrow::ChunkedArray>& original) {
-  auto maybe_indices = Indices(original);
-  if (!maybe_indices) {
-    return maybe_indices.error();
-  }
-  auto maybe_chunked = IndexedTake(original, maybe_indices.value());
-  if (!maybe_chunked) {
-    return maybe_chunked.error();
-  }
-  return maybe_chunked.value()->chunk(0);
-}
-
-katana::Result<std::shared_ptr<arrow::ChunkedArray>>
-katana::Shuffle(const std::shared_ptr<arrow::ChunkedArray>& original) {
-  int64_t length = original->length();
-  // Build indices array, reusable across properties
-  std::vector<uint64_t> indices_vec(length);
-  // fills the vector from 0 to indices_vec.size()-1
-  std::iota(indices_vec.begin(), indices_vec.end(), 0);
-  std::shuffle(indices_vec.begin(), indices_vec.end(), katana::GetGenerator());
-  arrow::CTypeTraits<int64_t>::BuilderType builder;
-  auto res = builder.Reserve(length);
-  if (!res.ok()) {
-    return KATANA_ERROR(
-        ArrowToKatana(res), "arrow builder reserve failed type: {} reason: {}",
-        original->type()->name(), res);
-  }
-  for (int64_t i = 0; i < length; ++i) {
-    builder.UnsafeAppend(indices_vec[i]);
-  }
-  std::shared_ptr<arrow::Array> indices;
-  res = builder.Finish(&indices);
-  if (!res.ok()) {
-    return KATANA_ERROR(
-        ArrowToKatana(res), "arrow shuffle builder failed type: {} reason: {}",
-        original->type()->name(), res);
-  }
-  return IndexedTake(original, indices);
 }
 
 std::shared_ptr<arrow::ChunkedArray>

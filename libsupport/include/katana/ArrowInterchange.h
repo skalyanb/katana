@@ -288,12 +288,6 @@ TableBuilder::AddColumn(const ColumnOptions& options) {
 ////////////////////////////////////////////
 // Arrow utilities
 
-/// Combine chunks of ChunkedArray into a single Array
-KATANA_EXPORT Result<std::shared_ptr<arrow::Array>> Unchunk(
-    const std::shared_ptr<arrow::ChunkedArray>& original);
-/// Return a randomly shuffled version of a ChunkedArray
-KATANA_EXPORT Result<std::shared_ptr<arrow::ChunkedArray>> Shuffle(
-    const std::shared_ptr<arrow::ChunkedArray>& original);
 /// Return a ChunkeArray of Nulls of the given type and length
 KATANA_EXPORT std::shared_ptr<arrow::ChunkedArray> NullChunkedArray(
     const std::shared_ptr<arrow::DataType>& type, int64_t length);
